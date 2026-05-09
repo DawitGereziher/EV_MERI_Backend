@@ -1,0 +1,16 @@
+{
+  "name": "mengedmate",
+  "version": "1.0.0",
+  "description": "Mengedmate EV Charging Station Locator",
+  "private": true,
+  "scripts": {
+    "build": "node build.js",
+    "start": "cd frontend && npm start"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "leaflet-routing-machine": "^3.2.12"
+  }
+}
