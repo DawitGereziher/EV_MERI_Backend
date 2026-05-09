@@ -159,7 +159,7 @@ if __name__ == "__main__":
                     # This requires decoding the QR code, which is complex for a simple test.
                     # Instead, we'll check if the serializer's create method *used* settings.API_BASE_URL
                     # by checking the mock value.
-                    if settings.API_BASE_URL == "https://evmeri.fly.dev":
+                    if settings.API_BASE_URL == "https://mengedmate-backend.onrender.com":
                         print(f"SUCCESS: settings.API_BASE_URL was correctly accessed (value: {settings.API_BASE_URL})")
                     else:
                         print(f"FAILURE: settings.API_BASE_URL was not the expected value: {settings.API_BASE_URL}")

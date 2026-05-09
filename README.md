@@ -117,8 +117,8 @@ EMAIL_HOST_USER=your_email@gmail.com
 EMAIL_HOST_PASSWORD=your_app_password
 
 # Frontend
-FRONTEND_URL=http://localhost:3000
-API_BASE_URL=http://localhost:8000
+FRONTEND_URL=https://ev-meri-occp-gateway.onrender.com
+API_BASE_URL=https://mengedmate-backend.onrender.com
 ```
 
 ## Contributing

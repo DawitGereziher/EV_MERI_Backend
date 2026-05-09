@@ -310,8 +310,8 @@ CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
 # CORS_ALLOWED_ORIGINS = [
-#     'http://localhost:3000',
-#     'http://localhost:8000',
+#     'https://ev-meri-occp-gateway.onrender.com',
+#     'https://mengedmate-backend.onrender.com',
 #     'http://localhost:65389',  # Flutter web dev server
 #     'https://mengedmate.vercel.app',
 #     'https://mengedmate-pf4ncgtkj-mengedmate.vercel.app',
@@ -362,8 +362,8 @@ CSRF_TRUSTED_ORIGINS = [
     'https://mengedmate-pf4ncgtkj-mengedmate.vercel.app',
     'https://*.mengedmate.com',
     'https://*.fly.dev',
-    'http://localhost:3000',
-    'http://localhost:8000'
+    'https://ev-meri-occp-gateway.onrender.com',
+    'https://mengedmate-backend.onrender.com'
 ]
 
 CSRF_HEADER_NAME = 'X-CSRFTOKEN'
@@ -429,7 +429,7 @@ MAX_IMAGE_SIZE_MB = float(os.environ.get('MAX_IMAGE_SIZE_MB', '1'))
 IMAGE_COMPRESSION_QUALITY = int(os.environ.get('IMAGE_COMPRESSION_QUALITY', '85'))
 MAX_IMAGE_DIMENSION = int(os.environ.get('MAX_IMAGE_DIMENSION', '1920'))
 
-API_BASE_URL = 'https://evmeri.fly.dev'
+API_BASE_URL = 'https://mengedmate-backend.onrender.com'
 
 CHAPA_SETTINGS = {
     'SECRET_KEY': os.environ.get('CHAPA_SECRET_KEY', 'CHASECK_TEST-BjSm5vKqLLOfYqar7ilo0E1vyz6sagAe'),
@@ -443,8 +443,8 @@ CHAPA_SETTINGS = {
 }
 
 OCPP_SETTINGS = {
-    'BASE_URL': os.environ.get('OCPP_BASE_URL', 'http://localhost:8000'),
-    'WEBSOCKET_URL': os.environ.get('OCPP_WEBSOCKET_URL', 'wss://evmeri.fly.dev/ws/ev-locator/'),
+    'BASE_URL': os.environ.get('OCPP_BASE_URL', 'https://mengedmate-backend.onrender.com'),
+    'WEBSOCKET_URL': os.environ.get('OCPP_WEBSOCKET_URL', 'wss://ev-meri-occp-gateway.onrender.com/ocpp/1.6/'),
     'WEBHOOK_URL': f'{API_BASE_URL}/api/ocpp/webhook/',
     'API_KEY': os.environ.get('OCPP_API_KEY', ''),
     'TIMEOUT': int(os.environ.get('OCPP_TIMEOUT', '30')),

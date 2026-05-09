@@ -494,7 +494,7 @@ cd evmeri-mobile</code></pre>
       <h4><strong>4. Configure API Endpoint</strong></h4>
       <pre><code># Edit lib/config/api_config.dart
 class ApiConfig {
-  static const String baseUrl = 'http://localhost:8000/api';
+  static const String baseUrl = 'https://mengedmate-backend.onrender.com/api';
   static const String chapaPublicKey = 'your_chapa_public_key';
 }</code></pre>
 
@@ -518,7 +518,7 @@ yarn install</code></pre>
 
       <h4><strong>3. Configure Environment</strong></h4>
       <pre><code># Create .env.local
-REACT_APP_API_URL=http://localhost:8000/api
+REACT_APP_API_URL=https://mengedmate-backend.onrender.com/api
 REACT_APP_CHAPA_PUBLIC_KEY=your_chapa_public_key</code></pre>
 
       <h4><strong>4. Start Development Server</strong></h4>
@@ -598,7 +598,7 @@ EMAIL_HOST_PASSWORD=your-app-password
 # Chapa Payment Configuration
 CHAPA_SECRET_KEY=your-chapa-secret-key
 CHAPA_PUBLIC_KEY=your-chapa-public-key
-CHAPA_RETURN_URL=http://localhost:3000/payment/callback
+CHAPA_RETURN_URL=https://ev-meri-occp-gateway.onrender.com/payment/callback
 
 # File Storage
 MEDIA_URL=/media/
@@ -607,8 +607,8 @@ STATIC_URL=/static/
 STATIC_ROOT=staticfiles/
 
 # Security Settings
-CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-CSRF_TRUSTED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000</code></pre>
+CORS_ALLOWED_ORIGINS=https://ev-meri-occp-gateway.onrender.com,http://127.0.0.1:3000
+CSRF_TRUSTED_ORIGINS=https://ev-meri-occp-gateway.onrender.com,http://127.0.0.1:3000</code></pre>
 
       <h3>Mobile App Configuration</h3>
 
@@ -625,7 +625,7 @@ class ApiConfig {
   static String get apiUrl {
     return isProduction
       ? 'https://api.evmeri.com/api'
-      : 'http://localhost:8000/api';
+      : 'https://mengedmate-backend.onrender.com/api';
   }
 }</code></pre>
 
@@ -644,7 +644,7 @@ class FirebaseConfig {
 
       <h4><strong>Environment Variables</strong></h4>
       <pre><code># .env.local for React app
-REACT_APP_API_URL=http://localhost:8000/api
+REACT_APP_API_URL=https://mengedmate-backend.onrender.com/api
 REACT_APP_CHAPA_PUBLIC_KEY=your-chapa-public-key
 REACT_APP_GOOGLE_MAPS_API_KEY=your-google-maps-key
 REACT_APP_FIREBASE_API_KEY=your-firebase-api-key
@@ -922,7 +922,7 @@ class _MapScreenState extends State<MapScreen> {
 
       <h3>Base Configuration</h3>
       <ul>
-        <li><strong>Base URL</strong>: <code>https://evmeri.fly.dev/api</code></li>
+        <li><strong>Base URL</strong>: <code>https://mengedmate-backend.onrender.com/api</code></li>
         <li><strong>Authentication</strong>: Token-based authentication</li>
         <li><strong>Content Type</strong>: <code>application/json</code></li>
         <li><strong>API Version</strong>: v1</li>

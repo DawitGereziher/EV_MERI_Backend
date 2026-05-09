@@ -8,7 +8,7 @@ class OCPPIntegrationClient:
     Client for testing OCPP integration endpoints
     """
     
-    def __init__(self, base_url="http://localhost:8000", auth_token=None):
+    def __init__(self, base_url="https://mengedmate-backend.onrender.com", auth_token=None):
         self.base_url = base_url.rstrip('/')
         self.auth_token = auth_token
         self.session = requests.Session()
