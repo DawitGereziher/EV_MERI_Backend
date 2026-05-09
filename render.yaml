@@ -5,25 +5,37 @@ services:
     buildCommand: ./build.sh
     startCommand: gunicorn mengedmate.wsgi:application
     plan: free
+
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+
       - key: SECRET_KEY
         generateValue: true
+
       - key: DEBUG
         value: "False"
+
       - key: DATABASE_URL
         fromDatabase:
           name: mengedmate-db
           property: connectionString
+
       - key: ALLOWED_HOSTS
         sync: false
+
       - key: CORS_ALLOWED_ORIGINS
         sync: false
+
       - key: FRONTEND_URL
         sync: false
+
       - key: EMAIL_HOST_USER
         sync: false
+
       - key: EMAIL_HOST_PASSWORD
         sync: false
+
     autoDeploy: true
 
 databases:
