@@ -210,9 +210,25 @@ def system_stats_view(request):
     from authentication.models import CustomUser
     
     # Get database stats
-    with connection.cursor() as cursor:
-        cursor.execute("SELECT pg_size_pretty(pg_database_size(current_database()))")
-        db_size = cursor.fetchone()[0] if cursor.fetchone() else "Unknown"
+    db_size = "Unknown"
+    try:
+        with connection.cursor() as cursor:
+            if connection.vendor == 'postgresql':
+                cursor.execute("SELECT pg_size_pretty(pg_database_size(current_database()))")
+                row = cursor.fetchone()
+                if row:
+                    db_size = row[0]
+            elif connection.vendor == 'sqlite':
+                # For SQLite, we can check the file size
+                db_name = settings.DATABASES['default']['NAME']
+                if os.path.exists(db_name):
+                    size_bytes = os.path.getsize(db_name)
+                    if size_bytes > 1024 * 1024:
+                        db_size = f"{size_bytes / (1024 * 1024):.2f} MB"
+                    else:
+                        db_size = f"{size_bytes / 1024:.2f} KB"
+    except Exception as e:
+        print(f"Error calculating database size: {e}")
     
     stats = {
         'total_users': CustomUser.objects.count(),
