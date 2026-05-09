@@ -91,7 +91,7 @@ class StationOwnerAdmin(admin.ModelAdmin):
     documents_uploaded.short_description = 'Documents'
 
     def business_document_preview(self, obj):
-        if obj.business_document:
+        if obj and obj.business_document:
             # Check if it's an image (data:image/...)
             if obj.business_document.startswith('data:image/'):
                 return format_html(
@@ -110,7 +110,7 @@ class StationOwnerAdmin(admin.ModelAdmin):
     business_document_preview.short_description = 'Business Document Preview'
 
     def business_license_preview(self, obj):
-        if obj.business_license:
+        if obj and obj.business_license:
             if obj.business_license.startswith('data:image/'):
                 return format_html(
                     '<div style="margin: 10px 0;">'
@@ -124,7 +124,7 @@ class StationOwnerAdmin(admin.ModelAdmin):
     business_license_preview.short_description = 'Business License Preview'
 
     def id_proof_preview(self, obj):
-        if obj.id_proof:
+        if obj and obj.id_proof:
             if obj.id_proof.startswith('data:image/'):
                 return format_html(
                     '<div style="margin: 10px 0;">'
@@ -138,7 +138,7 @@ class StationOwnerAdmin(admin.ModelAdmin):
     id_proof_preview.short_description = 'ID Proof Preview'
 
     def utility_bill_preview(self, obj):
-        if obj.utility_bill:
+        if obj and obj.utility_bill:
             if obj.utility_bill.startswith('data:image/'):
                 return format_html(
                     '<div style="margin: 10px 0;">'
