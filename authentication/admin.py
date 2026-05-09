@@ -13,7 +13,14 @@ class CustomUserCreationForm(forms.ModelForm):
     class Meta:
         model = CustomUser
         fields = ('email', 'first_name', 'last_name')
-        
+
+    def clean_password2(self):
+        password1 = self.cleaned_data.get("password1")
+        password2 = self.cleaned_data.get("password2")
+        if password1 and password2 and password1 != password2:
+            raise forms.ValidationError(_("Passwords do not match"))
+        return password2
+
     def save(self, commit=True):
         user = super().save(commit=False)
         user.set_password(self.cleaned_data["password1"])
@@ -21,7 +28,9 @@ class CustomUserCreationForm(forms.ModelForm):
             user.save()
         return user
 
-class CustomUserChangeForm(forms.ModelForm):
+from django.contrib.auth.forms import UserChangeForm
+
+class CustomUserChangeForm(UserChangeForm):
     class Meta:
         model = CustomUser
         fields = '__all__'
@@ -68,7 +77,8 @@ class CustomUserAdmin(UserAdmin):
     )
 
     def full_name(self, obj):
-        return f"{obj.first_name} {obj.last_name}"
+        name = f"{obj.first_name} {obj.last_name}".strip()
+        return name if name else obj.email
     full_name.short_description = 'Name'
 
     def verification_status(self, obj):
@@ -166,18 +176,23 @@ class CustomUserAdminWithVehicles(CustomUserAdmin):
         fieldsets = super().get_fieldsets(request, obj)
         if obj: 
             return fieldsets
-        else:
-            modified_fieldsets = []
-            for name, options in fieldsets:
-                if name == _('EV Details'):
-                    fields = list(options['fields'])
-                    if 'active_vehicle' in fields:
-                        fields.remove('active_vehicle')
-                    options = dict(options)
-                    options['fields'] = tuple(fields)
-                modified_fieldsets.append((name, options))
-            return modified_fieldsets
-        return fieldsets
+        
+        # When adding a user, we use add_fieldsets
+        # If super().get_fieldsets doesn't return add_fieldsets for obj=None, 
+        # we fallback to self.add_fieldsets
+        if not fieldsets and hasattr(self, 'add_fieldsets'):
+            fieldsets = self.add_fieldsets
+            
+        modified_fieldsets = []
+        for name, options in fieldsets:
+            if name == _('EV Details'):
+                fields = list(options.get('fields', []))
+                if 'active_vehicle' in fields:
+                    fields.remove('active_vehicle')
+                options = dict(options)
+                options['fields'] = tuple(fields)
+            modified_fieldsets.append((name, options))
+        return tuple(modified_fieldsets)
 
 
 admin.site.register(CustomUser, CustomUserAdminWithVehicles)

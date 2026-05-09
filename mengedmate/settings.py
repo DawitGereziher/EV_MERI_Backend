@@ -130,7 +130,7 @@ JAZZMIN_SETTINGS = {
 
 
     "custom_css": None,
-    "custom_js": None,
+    "custom_js": "admin/js/error_debug.js",
 
 
     "show_ui_builder": False,
@@ -189,6 +189,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "allauth.account.middleware.AccountMiddleware",
+    "authentication.middleware.AdminErrorConsoleMiddleware",
     "authentication.middleware.AuthenticationBypassMiddleware",
 ]
 

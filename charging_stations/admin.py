@@ -621,10 +621,12 @@ class ReviewReplyAdmin(admin.ModelAdmin):
     )
 
     def review_info(self, obj):
+        name = f"{obj.review.user.first_name} {obj.review.user.last_name}".strip()
+        reviewer = name if name else obj.review.user.email
         return format_html(
             '<strong>{}</strong><br><small>Review by: {} ({}⭐)</small>',
             obj.review.station.name,
-            f"{obj.review.user.first_name} {obj.review.user.last_name}".strip() or obj.review.user.email,
+            reviewer,
             obj.review.rating
         )
     review_info.short_description = 'Review Information'
