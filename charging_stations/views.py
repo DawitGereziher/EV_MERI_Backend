@@ -345,6 +345,7 @@ class ConnectorCreateView(generics.CreateAPIView):
                 'price_per_kwh': float(sql_connector.price_per_kwh) if sql_connector.price_per_kwh else None,
                 'is_available': sql_connector.is_available,
                 'status': sql_connector.status,
+                'qr_code_token': sql_connector.qr_code_token,
             }
             firestore_repo.add_connector_to_station(str(station_id), connector_data)
         except Exception as e:
@@ -362,6 +363,8 @@ class ConnectorCreateView(generics.CreateAPIView):
                 'price_per_kwh': float(sql_connector.price_per_kwh) if sql_connector.price_per_kwh else None,
                 'is_available': sql_connector.is_available,
                 'status': sql_connector.status,
+                'qr_code_token': sql_connector.qr_code_token,
+                'qr_code_image': sql_connector.qr_code_image,
             }
         }, status=status.HTTP_201_CREATED)
 
