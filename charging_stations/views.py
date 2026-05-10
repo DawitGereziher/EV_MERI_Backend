@@ -64,14 +64,24 @@ class StationOwnerRegistrationView(generics.GenericAPIView):
         })
         plain_message = strip_tags(html_message)
 
-        send_mail(
-            subject,
-            plain_message,
-            settings.DEFAULT_FROM_EMAIL,
-            [user.email],
-            html_message=html_message,
-            fail_silently=False,
-        )
+        print("\n" + "="*50)
+        print(f"STATION OWNER VERIFICATION CODE FOR {user.email}: {verification_code}")
+        print("="*50 + "\n")
+
+        try:
+            send_mail(
+                subject,
+                plain_message,
+                settings.DEFAULT_FROM_EMAIL,
+                [user.email],
+                html_message=html_message,
+                fail_silently=False,
+            )
+        except Exception as e:
+            import traceback
+            import sys
+            print(f"Failed to send verification email: {str(e)}", file=sys.stderr)
+            print("To fix the timeout, set USE_CONSOLE_EMAIL=True in Render environment variables or configure valid EMAIL_HOST_USER credentials.", file=sys.stderr)
 
         return Response({
             "message": "Registration successful. Please check your email for verification code.",

@@ -396,7 +396,7 @@ else:
 # Email Settings
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'MengedMate <noreply@mengedmate.com>')
 EMAIL_SUBJECT_PREFIX = '[MengedMate] '
-EMAIL_TIMEOUT = 60
+EMAIL_TIMEOUT = 5
 
 
 

@@ -96,14 +96,22 @@ class RegisterView(generics.CreateAPIView):
         from_email = settings.EMAIL_HOST_USER
         recipient_list = [user.email]
 
-        send_mail(
-            subject,
-            plain_message,
-            from_email,
-            recipient_list,
-            html_message=html_message,
-            fail_silently=False
-        )
+        print("\n" + "="*50)
+        print(f"USER REGISTRATION VERIFICATION CODE FOR {user.email}: {user.verification_code}")
+        print("="*50 + "\n")
+
+        try:
+            send_mail(
+                subject,
+                plain_message,
+                from_email,
+                recipient_list,
+                html_message=html_message,
+                fail_silently=False
+            )
+        except Exception as e:
+            import sys
+            print(f"Email failed (code: {user.verification_code}): {str(e)}", file=sys.stderr)
 
 
 class VerifyEmailView(APIView):
@@ -152,14 +160,22 @@ class LoginView(APIView):
         from_email = settings.DEFAULT_FROM_EMAIL
         recipient_list = [user.email]
 
-        send_mail(
-            subject,
-            plain_message,
-            from_email,
-            recipient_list,
-            html_message=html_message,
-            fail_silently=False
-        )
+        print("\n" + "="*50)
+        print(f"USER LOGIN VERIFICATION CODE FOR {user.email}: {user.verification_code}")
+        print("="*50 + "\n")
+
+        try:
+            send_mail(
+                subject,
+                plain_message,
+                from_email,
+                recipient_list,
+                html_message=html_message,
+                fail_silently=False
+            )
+        except Exception as e:
+            import sys
+            print(f"Email failed (code: {user.verification_code}): {str(e)}", file=sys.stderr)
 
     def post(self, request):
         try:
