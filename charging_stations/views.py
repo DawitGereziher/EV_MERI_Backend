@@ -49,8 +49,12 @@ class StationOwnerRegistrationView(generics.GenericAPIView):
     serializer_class = StationOwnerRegistrationSerializer
 
     def post(self, request):
+        import sys
+        print(f"\n>>> StationOwner register attempt with data keys: {list(request.data.keys())}", file=sys.stderr)
         serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            print(f">>> StationOwner register VALIDATION ERRORS: {serializer.errors}", file=sys.stderr)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         result = serializer.save()
 
         user = result['user']
@@ -190,6 +194,30 @@ class StationOwnerProfileView(generics.RetrieveUpdateAPIView):
 
     def perform_update(self, serializer):
         serializer.save()
+
+        # Sync uploaded documents back to SQL so Django Admin can display them
+        try:
+            from .models import StationOwner
+            request = self.request
+            sql_owner = StationOwner.objects.filter(user=request.user).first()
+            if sql_owner:
+                data = serializer.validated_data
+                changed = False
+                for field in ['business_document', 'business_license', 'id_proof', 'utility_bill',
+                              'company_name', 'business_registration_number', 'contact_phone',
+                              'contact_email', 'website', 'description']:
+                    if field in data and data[field] is not None:
+                        setattr(sql_owner, field, data[field])
+                        changed = True
+                if data.get('is_profile_completed'):
+                    sql_owner.is_profile_completed = True
+                    changed = True
+                if changed:
+                    sql_owner.save()
+        except Exception as e:
+            import sys
+            print(f"Warning: Could not sync profile update to SQL: {e}", file=sys.stderr)
+
 
 from utils.firestore_repo import firestore_repo
 from .serializers import FirestoreChargingStationSerializer

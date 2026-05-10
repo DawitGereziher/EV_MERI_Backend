@@ -273,14 +273,22 @@ class ResendVerificationView(APIView):
             from_email = settings.EMAIL_HOST_USER
             recipient_list = [user.email]
 
-            send_mail(
-                subject,
-                plain_message,
-                from_email,
-                recipient_list,
-                html_message=html_message,
-                fail_silently=False
-            )
+            print("\n" + "="*50)
+            print(f"RESEND VERIFICATION CODE FOR {user.email}: {verification_code}")
+            print("="*50 + "\n")
+
+            try:
+                send_mail(
+                    subject,
+                    plain_message,
+                    from_email,
+                    recipient_list,
+                    html_message=html_message,
+                    fail_silently=False
+                )
+            except Exception as e:
+                import sys
+                print(f"Email failed (code: {verification_code}): {str(e)}", file=sys.stderr)
 
             return Response({
                 "message": "Verification code resent. Please check your email."

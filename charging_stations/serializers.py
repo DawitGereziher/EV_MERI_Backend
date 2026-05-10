@@ -41,6 +41,8 @@ class StationOwnerRegistrationSerializer(serializers.Serializer):
         return attrs
 
     def create(self, validated_data):
+        from .models import StationOwner
+
         user = User(
             email=validated_data['email'],
             first_name=validated_data['first_name'],
@@ -54,9 +56,16 @@ class StationOwnerRegistrationSerializer(serializers.Serializer):
         user.set_password(validated_data['password'])
         user.save()
 
-        user.save()
+        # Create SQL StationOwner record so Django Admin can see it
+        sql_owner = StationOwner.objects.create(
+            user=user,
+            company_name=validated_data['company_name'],
+            contact_email=user.email,
+            verification_status='pending',
+            is_profile_completed=False,
+        )
 
-        # Create Station Owner profile in Firestore
+        # Also create Firestore profile for mobile/frontend reads
         owner_data = {
             'company_name': validated_data['company_name'],
             'is_profile_completed': False,
