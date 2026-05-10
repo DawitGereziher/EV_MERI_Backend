@@ -519,50 +519,50 @@ class StationImageCreateView(generics.CreateAPIView):
 
 
 class StationQRCodesView(APIView):
-    """View to get QR codes for all connectors of a station"""
+    """View to get QR codes for all connectors of a station (SQL source of truth)"""
     permission_classes = [permissions.IsAuthenticated]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
 
     def get(self, request, station_id):
+        from .models import ChargingStation, ChargingConnector
         try:
-            station = firestore_repo.get_station(station_id)
-            if not station:
-                 return Response({"error": "Station not found"}, status=status.HTTP_404_NOT_FOUND)
-
-            if station.get('owner_id') != str(request.user.id):
+            station = ChargingStation.objects.get(id=station_id)
+            if station.owner.user != request.user:
                  return Response({"error": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
 
-            connectors = firestore_repo.list_connectors(station_id)
+            connectors = ChargingConnector.objects.filter(station=station)
             qr_data = []
 
             for connector in connectors:
-                qr_token = connector.get('qr_code_token')
+                qr_token = connector.qr_code_token
                 qr_data.append({
-                    'connector_id': connector.get('id'),
-                    'connector_type': connector.get('connector_type'),
-                    'connector_type_display': connector.get('connector_type_display'),
-                    'power_kw': connector.get('power_kw'),
-                    'quantity': connector.get('quantity'),
-                    'available_quantity': connector.get('available_quantity'),
-                    'price_per_kwh': connector.get('price_per_kwh'),
+                    'connector_id': str(connector.id),
+                    'connector_type': connector.connector_type,
+                    'connector_type_display': connector.get_connector_type_display(),
+                    'power_kw': float(connector.power_kw),
+                    'quantity': connector.quantity,
+                    'available_quantity': connector.available_quantity,
+                    'price_per_kwh': float(connector.price_per_kwh) if connector.price_per_kwh else None,
                     'qr_code_token': qr_token,
-                    'qr_code_url': connector.get('qr_code_image'), # We store base64 as 'qr_code_image' or URL? Serializer said 'qr_code_image'
+                    'qr_code_url': connector.qr_code_image,
                     'qr_payment_url': f"{settings.API_BASE_URL}/api/payments/qr-initiate/{qr_token}/" if qr_token else None,
-                    'is_available': connector.get('is_available'),
-                    'status': connector.get('status'),
-                    'status_display': connector.get('status_display')
+                    'is_available': connector.is_available,
+                    'status': connector.status,
+                    'status_display': connector.get_status_display()
                 })
 
             return Response({
                 'success': True,
                 'station': {
-                    'id': station.get('id'),
-                    'name': station.get('name'),
-                    'address': station.get('address')
+                    'id': str(station.id),
+                    'name': station.name,
+                    'address': station.address
                 },
                 'connectors': qr_data
             })
 
+        except ChargingStation.DoesNotExist:
+            return Response({"error": "Station not found"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({
                 'success': False,
@@ -571,66 +571,37 @@ class StationQRCodesView(APIView):
 
 
 class ConnectorQRCodeView(APIView):
-    """View to get or regenerate QR code for a specific connector"""
+    """View to get or regenerate QR code for a specific connector (SQL source of truth)"""
     permission_classes = [permissions.IsAuthenticated]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
 
+    def _get_sql_connector(self, request, connector_id):
+        from .models import ChargingConnector
+        from rest_framework.exceptions import NotFound, PermissionDenied
+        try:
+            connector = ChargingConnector.objects.select_related('station__owner__user').get(id=connector_id)
+            if connector.station.owner.user != request.user:
+                raise PermissionDenied("Not your connector")
+            return connector
+        except ChargingConnector.DoesNotExist:
+            raise NotFound("Connector not found")
+
     def get(self, request, connector_id):
         try:
-            # We need station_id to find connector in subcollection!!! 
-            # The URL usually contains station_id if nested, 
-            # but here it seems to be just /connectors/<id>/qrcode/?
-            # If so, we have a problem: Firestore needs parent ID.
-            # Assuming the URL structure is /stations/<station_id>/connectors/<id>/qrcode/ 
-            # Let's check the kwargs.
-            # If the URL is just /connectors/<id>/, we need to search ALL stations? Efficient query needed.
-            # Or we change URL structure.
-            # EXISTING urls.py likely routes /api/connectors/<pk>/qrcode/ 
-            # SQL allows direct lookup. Firestore requires parent.
-            # We can use Collection Group Query to find connector by ID, get parent station.
-            # Or we rely on request having station_id? Unlikely.
-            
-            # For now, I'll attempt a Collection Group Query wrapper in repo if needed.
-            # But let's check how to get station_id.
-            # If I can't change URLs, I must find station.
-            pass
-            # I will use a helper to find station by connector_id
-            
-            # Temporary: search matching connector in ALL stations owned by user (filtered list)
-            # This is slow but safe for now.
-            filters = {'owner_id': str(request.user.id)}
-            all_stations = firestore_repo.list_stations(filters=filters)
-            
-            found_connector = None
-            found_station = None
-            
-            for station in all_stations:
-                conn = firestore_repo.get_connector(station.get('id'), connector_id)
-                if conn:
-                    found_connector = conn
-                    found_station = station
-                    break
-            
-            if not found_connector:
-                 return Response({"error": "Connector not found"}, status=status.HTTP_404_NOT_FOUND)
-
-            connector = found_connector
-            
-            # QR Token logic is inside ChargingConnector model save() in SQL.
-            # In Firestore, we need to generate it.
+            connector = self._get_sql_connector(request, connector_id)
             
             return Response({
                 'success': True,
                 'connector': {
-                    'id': connector.get('id'),
-                    'connector_type': connector.get('connector_type'),
-                    'connector_type_display': connector.get('connector_type_display'),
-                    'power_kw': connector.get('power_kw'),
-                    'price_per_kwh': connector.get('price_per_kwh'),
-                    'qr_code_token': connector.get('qr_code_token'),
-                    'qr_code_url': connector.get('qr_code_image'),
-                    'qr_payment_url': f"{settings.API_BASE_URL}/api/payments/qr-initiate/{connector.get('qr_code_token')}/" if connector.get('qr_code_token') else None,
-                    'station_name': found_station.get('name')
+                    'id': str(connector.id),
+                    'connector_type': connector.connector_type,
+                    'connector_type_display': connector.get_connector_type_display(),
+                    'power_kw': float(connector.power_kw),
+                    'price_per_kwh': float(connector.price_per_kwh) if connector.price_per_kwh else None,
+                    'qr_code_token': connector.qr_code_token,
+                    'qr_code_url': connector.qr_code_image,
+                    'qr_payment_url': f"{settings.API_BASE_URL}/api/payments/qr-initiate/{connector.qr_code_token}/" if connector.qr_code_token else None,
+                    'station_name': connector.station.name
                 }
             })
 
@@ -638,57 +609,36 @@ class ConnectorQRCodeView(APIView):
             return Response({
                 'success': False,
                 'error': str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            }, status=status.HTTP_400_BAD_REQUEST)
 
     def post(self, request, connector_id):
         """Regenerate QR code for connector"""
-        # Similar logic to find connector
+        import sys
         try:
-            filters = {'owner_id': str(request.user.id)}
-            all_stations = firestore_repo.list_stations(filters=filters)
+            connector = self._get_sql_connector(request, connector_id)
             
-            found_connector = None
-            found_station = None
+            # Force regenerate new token by clearing the old one
+            connector.qr_code_token = None
+            connector.qr_code_image = None
+            connector.save() # save() automatically generates a new token and QR code image
             
-            for station in all_stations:
-                conn = firestore_repo.get_connector(station.get('id'), connector_id)
-                if conn:
-                    found_connector = conn
-                    found_station = station
-                    break
-            
-            if not found_connector:
-                 return Response({"error": "Connector not found"}, status=status.HTTP_404_NOT_FOUND)
-            
-            # Logic to regenerate QR
-            from utils.qr_generator import generate_qr_code_base64, generate_unique_token
-            
-            # Generate new token
-            unique_string = f"{found_station.get('id')}-{connector_id}"
-            token = generate_unique_token(unique_string)
-            
-            # Generate QR image
-            from django.conf import settings
-            qr_data = f"{settings.API_BASE_URL}/api/payments/qr-initiate/{token}/"
-            qr_image = generate_qr_code_base64(qr_data)
-            
-            # Update Firestore
-            updates = {
-                'qr_code_token': token,
-            }
-            if qr_image:
-                updates['qr_code_image'] = qr_image
+            # Update Firestore (best-effort)
+            try:
+                firestore_repo.update_connector(str(connector.station.id), str(connector.id), {
+                    'qr_code_token': connector.qr_code_token,
+                    'qr_code_image': connector.qr_code_image
+                })
+            except Exception as e:
+                print(f"Warning: Firestore QR regenerate sync failed: {e}", file=sys.stderr)
 
-            updated = firestore_repo.update_connector(found_station.get('id'), connector_id, updates)
-            
             return Response({
                 'success': True,
                 'message': 'QR code regenerated successfully',
                 'connector': {
-                    'id': updated.get('id'),
-                    'qr_code_token': updated.get('qr_code_token'),
-                    'qr_code_url': updated.get('qr_code_image'),
-                    'qr_payment_url': f"{settings.API_BASE_URL}/api/payments/qr-initiate/{updated.get('qr_code_token')}/"
+                    'id': str(connector.id),
+                    'qr_code_token': connector.qr_code_token,
+                    'qr_code_url': connector.qr_code_image,
+                    'qr_payment_url': f"{settings.API_BASE_URL}/api/payments/qr-initiate/{connector.qr_code_token}/"
                 }
             })
             
@@ -696,7 +646,7 @@ class ConnectorQRCodeView(APIView):
             return Response({
                 'success': False,
                 'error': str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            }, status=status.HTTP_400_BAD_REQUEST)
 
 
 class DownloadQRCodeView(APIView):
