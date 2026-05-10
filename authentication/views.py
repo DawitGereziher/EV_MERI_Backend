@@ -162,59 +162,70 @@ class LoginView(APIView):
         )
 
     def post(self, request):
-        serializer = LoginSerializer(data=request.data)
-        if serializer.is_valid():
-            email = serializer.validated_data['email']
-            password = serializer.validated_data['password']
+        try:
+            serializer = LoginSerializer(data=request.data)
+            if serializer.is_valid():
+                email = serializer.validated_data['email']
+                password = serializer.validated_data['password']
 
-            user = authenticate(request, username=email, password=password)
+                user = authenticate(request, username=email, password=password)
 
-            if user is not None:
-                if not user.is_verified:
-                    if not user.verification_code:
-                        verification_code = ''.join(random.choices(string.digits, k=6))
-                        user.verification_code = verification_code
-                        user.save()
-                        self.send_verification_email(user)
+                if user is not None:
+                    if not user.is_verified:
+                        if not user.verification_code:
+                            verification_code = ''.join(random.choices(string.digits, k=6))
+                            user.verification_code = verification_code
+                            user.save()
+                            self.send_verification_email(user)
+
+                        return Response({
+                            "message": "Email not verified. Please verify your email first.",
+                            "requires_verification": True,
+                            "email": user.email,
+                            "status": "unverified"
+                        }, status=status.HTTP_200_OK)
+
+                    token, created = Token.objects.get_or_create(user=user)
+
+                    is_station_owner = StationOwner.objects.filter(user=user).exists()
+                    
+                    # Fetch profile from Firestore
+                    profile = firestore_repo.get_user_profile(user.id)
+                    if not profile:
+                        # Lazy create if missing (migration path)
+                        profile = {
+                            'email': user.email,
+                            'first_name': user.first_name,
+                            'last_name': user.last_name,
+                            'is_verified': True
+                        }
+                        firestore_repo.create_user_profile(user.id, profile)
+
+                    user_data = FirestoreUserSerializer(profile).data
+                    user_data['is_station_owner'] = is_station_owner
 
                     return Response({
-                        "message": "Email not verified. Please verify your email first.",
-                        "requires_verification": True,
-                        "email": user.email,
-                        "status": "unverified"
+                        "message": "Login successful.",
+                        "token": token.key,
+                        "user": user_data,
+                        "status": "verified"
                     }, status=status.HTTP_200_OK)
+                else:
+                    return Response({
+                        "message": "Invalid credentials."
+                    }, status=status.HTTP_401_UNAUTHORIZED)
 
-                token, created = Token.objects.get_or_create(user=user)
-
-                is_station_owner = StationOwner.objects.filter(user=user).exists()
-                
-                # Fetch profile from Firestore
-                profile = firestore_repo.get_user_profile(user.id)
-                if not profile:
-                    # Lazy create if missing (migration path)
-                    profile = {
-                        'email': user.email,
-                        'first_name': user.first_name,
-                        'last_name': user.last_name,
-                        'is_verified': True
-                    }
-                    firestore_repo.create_user_profile(user.id, profile)
-
-                user_data = FirestoreUserSerializer(profile).data
-                user_data['is_station_owner'] = is_station_owner
-
-                return Response({
-                    "message": "Login successful.",
-                    "token": token.key,
-                    "user": user_data,
-                    "status": "verified"
-                }, status=status.HTTP_200_OK)
-            else:
-                return Response({
-                    "message": "Invalid credentials."
-                }, status=status.HTTP_401_UNAUTHORIZED)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            import traceback
+            import sys
+            print(f"Login failed with error: {str(e)}", file=sys.stderr)
+            print(traceback.format_exc(), file=sys.stderr)
+            return Response({
+                "message": "Internal Server Error",
+                "error": str(e),
+                "trace": traceback.format_exc()
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class ResendVerificationView(APIView):
