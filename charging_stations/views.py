@@ -304,31 +304,65 @@ class ConnectorCreateView(generics.CreateAPIView):
     parser_classes = [JSONParser] # Connector data usually JSON
 
     def create(self, request, *args, **kwargs):
+        import sys
         station_id = self.kwargs.get('station_id')
-        station = firestore_repo.get_station(station_id)
-        
-        if not station:
-             return Response({"error": "Station not found"}, status=status.HTTP_404_NOT_FOUND)
-             
-        # Check ownership
-        # Check ownership
-        if station.get('owner_id') != str(request.user.id):
-             return Response({"error": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        
-        # Check for existing connector? FirestoreRepo doesn't do this yet, but we can iterate.
-        # For simplicity, we just create new one or let repo handle it.
-        # The logic "existing_connector" in original view was checking duplicates. 
-        # We'll skip complex dup check for now or rely on client.
-        
-        connector = serializer.save()
-        
+        # --- Verify station exists in SQL and belongs to this user ---
+        try:
+            from .models import ChargingStation, ChargingConnector, StationOwner
+            sql_station = ChargingStation.objects.get(id=station_id, owner__user=request.user)
+        except ChargingStation.DoesNotExist:
+            return Response({"error": "Station not found or permission denied"}, status=status.HTTP_404_NOT_FOUND)
+
+        # --- Save connector to SQL ---
+        data = request.data
+        try:
+            sql_connector = ChargingConnector.objects.create(
+                station=sql_station,
+                connector_type=data.get('connector_type', 'type2'),
+                power_kw=data.get('power_kw', 22),
+                quantity=int(data.get('quantity', 1)),
+                available_quantity=int(data.get('quantity', 1)),
+                price_per_kwh=data.get('price_per_kwh'),
+                is_available=data.get('is_available', True),
+                status=data.get('status', 'available'),
+                description=data.get('description', ''),
+            )
+            # Update station connector counts
+            sql_station.update_connector_counts()
+        except Exception as e:
+            print(f"Failed to create SQL connector: {e}", file=sys.stderr)
+            return Response({"error": f"Failed to create connector: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # --- Also mirror to Firestore (best-effort, don't fail if it errors) ---
+        try:
+            connector_data = {
+                'id': str(sql_connector.id),
+                'connector_type': sql_connector.connector_type,
+                'power_kw': float(sql_connector.power_kw),
+                'quantity': sql_connector.quantity,
+                'available_quantity': sql_connector.available_quantity,
+                'price_per_kwh': float(sql_connector.price_per_kwh) if sql_connector.price_per_kwh else None,
+                'is_available': sql_connector.is_available,
+                'status': sql_connector.status,
+            }
+            firestore_repo.add_connector_to_station(str(station_id), connector_data)
+        except Exception as e:
+            print(f"Warning: Firestore connector sync failed (non-fatal): {e}", file=sys.stderr)
+
         return Response({
             'success': True,
             'message': 'Connector added successfully',
-            'connector': connector
+            'connector': {
+                'id': str(sql_connector.id),
+                'connector_type': sql_connector.connector_type,
+                'power_kw': float(sql_connector.power_kw),
+                'quantity': sql_connector.quantity,
+                'available_quantity': sql_connector.available_quantity,
+                'price_per_kwh': float(sql_connector.price_per_kwh) if sql_connector.price_per_kwh else None,
+                'is_available': sql_connector.is_available,
+                'status': sql_connector.status,
+            }
         }, status=status.HTTP_201_CREATED)
 
 
@@ -339,41 +373,91 @@ class ConnectorDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = FirestoreChargingConnectorSerializer
     lookup_field = 'id'
 
-    def get_object(self):
+    def _get_sql_connector(self):
+        """Get connector from SQL, verifying ownership via the station."""
+        import sys
+        from .models import ChargingConnector, ChargingStation
         station_id = self.kwargs.get('station_id')
         connector_id = self.kwargs.get('id')
-        
-        # We need check station owner first
-        station = firestore_repo.get_station(station_id)
-        if not station:
-             self.permission_denied(self.request, message="Station not found", code=404)
-             
-        if station.get('owner_id') != str(self.request.user.id):
-             self.permission_denied(self.request, message="You do not own this station")
-
-        connector = firestore_repo.get_connector(station_id, connector_id)
-        if not connector:
-             self.permission_denied(self.request, message="Connector not found", code=404)
-        return connector
+        try:
+            connector = ChargingConnector.objects.select_related('station__owner__user').get(
+                id=connector_id,
+                station__id=station_id,
+                station__owner__user=self.request.user
+            )
+            return connector
+        except ChargingConnector.DoesNotExist:
+            from rest_framework.exceptions import NotFound
+            raise NotFound("Connector not found or permission denied.")
 
     def retrieve(self, request, *args, **kwargs):
-        instance = self.get_object()
-        serializer = self.get_serializer(instance)
-        return Response(serializer.data)
+        connector = self._get_sql_connector()
+        return Response({
+            'id': str(connector.id),
+            'connector_type': connector.connector_type,
+            'power_kw': float(connector.power_kw),
+            'quantity': connector.quantity,
+            'available_quantity': connector.available_quantity,
+            'price_per_kwh': float(connector.price_per_kwh) if connector.price_per_kwh else None,
+            'is_available': connector.is_available,
+            'status': connector.status,
+            'description': connector.description or '',
+            'qr_code_token': connector.qr_code_token,
+            'qr_code_image': connector.qr_code_image,
+        })
 
     def update(self, request, *args, **kwargs):
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
-        
-        updated = firestore_repo.update_connector(self.kwargs.get('station_id'), instance['id'], serializer.validated_data)
-        return Response(updated)
+        import sys
+        connector = self._get_sql_connector()
+        data = request.data
+        updateable = ['connector_type', 'power_kw', 'quantity', 'available_quantity',
+                      'price_per_kwh', 'is_available', 'status', 'description']
+        for field in updateable:
+            if field in data:
+                setattr(connector, field, data[field])
+        connector.save()
+        connector.station.update_connector_counts()
+
+        # Mirror to Firestore (best-effort)
+        try:
+            firestore_repo.update_connector(str(self.kwargs.get('station_id')), str(connector.id), {
+                'connector_type': connector.connector_type,
+                'power_kw': float(connector.power_kw),
+                'quantity': connector.quantity,
+                'available_quantity': connector.available_quantity,
+                'price_per_kwh': float(connector.price_per_kwh) if connector.price_per_kwh else None,
+                'is_available': connector.is_available,
+                'status': connector.status,
+            })
+        except Exception as e:
+            print(f"Warning: Firestore connector update failed (non-fatal): {e}", file=sys.stderr)
+
+        return Response({
+            'id': str(connector.id),
+            'connector_type': connector.connector_type,
+            'power_kw': float(connector.power_kw),
+            'quantity': connector.quantity,
+            'available_quantity': connector.available_quantity,
+            'price_per_kwh': float(connector.price_per_kwh) if connector.price_per_kwh else None,
+            'is_available': connector.is_available,
+            'status': connector.status,
+        })
 
     def destroy(self, request, *args, **kwargs):
-         instance = self.get_object()
-         firestore_repo.delete_connector(self.kwargs.get('station_id'), instance['id'])
-         return Response(status=status.HTTP_204_NO_CONTENT)
+        import sys
+        connector = self._get_sql_connector()
+        station = connector.station
+        connector_id_str = str(connector.id)
+        connector.delete()
+        station.update_connector_counts()
+
+        # Mirror to Firestore (best-effort)
+        try:
+            firestore_repo.delete_connector(str(self.kwargs.get('station_id')), connector_id_str)
+        except Exception as e:
+            print(f"Warning: Firestore connector delete failed (non-fatal): {e}", file=sys.stderr)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 from .serializers import FirestoreStationImageSerializer
 
@@ -385,27 +469,50 @@ class StationImageCreateView(generics.CreateAPIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def create(self, request, *args, **kwargs):
-        # We need to manually handle image upload if it's Multipart/Form
-        # The serializer Base64ImageField expects base64 or file.
-        # But if it is multipart, request.data has file object.
-        # Base64ImageField handles file object too.
-        
+        import sys
+        from .models import ChargingStation, StationImage
+
         station_id = self.kwargs.get('station_id')
-        station = firestore_repo.get_station(station_id)
-        if not station:
-             return Response({"error": "Station not found"}, status=status.HTTP_404_NOT_FOUND)
-             
-        # Check ownership
-        # Check ownership
-        if station.get('owner_id') != str(request.user.id):
-             return Response({"error": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
-             
+        try:
+            sql_station = ChargingStation.objects.get(id=station_id, owner__user=request.user)
+        except ChargingStation.DoesNotExist:
+            return Response({"error": "Station not found or permission denied"}, status=status.HTTP_404_NOT_FOUND)
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
-        image = firestore_repo.create_image(station_id, serializer.validated_data)
-        
-        return Response(image, status=status.HTTP_201_CREATED)
+        validated = serializer.validated_data
+
+        # Save to SQL so station detail endpoint returns it
+        try:
+            sql_image = StationImage.objects.create(
+                station=sql_station,
+                image=validated.get('image', ''),
+                caption=validated.get('caption', ''),
+                order=validated.get('order', 0),
+            )
+        except Exception as e:
+            print(f"Failed to create SQL StationImage: {e}", file=sys.stderr)
+            return Response({"error": f"Failed to save image: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Mirror to Firestore (best-effort)
+        try:
+            firestore_repo.create_image(str(station_id), {
+                'id': str(sql_image.id),
+                'image': sql_image.image,
+                'caption': sql_image.caption or '',
+                'order': sql_image.order,
+            })
+        except Exception as e:
+            print(f"Warning: Firestore image sync failed (non-fatal): {e}", file=sys.stderr)
+
+        return Response({
+            'id': sql_image.id,
+            'image': sql_image.image,
+            'caption': sql_image.caption,
+            'order': sql_image.order,
+        }, status=status.HTTP_201_CREATED)
+
+
 
 
 class StationQRCodesView(APIView):
@@ -693,147 +800,172 @@ class AppContentView(APIView):
 
 
 class StationReviewListCreateView(generics.ListCreateAPIView):
-    """View to list and create station reviews"""
+    """View to list and create station reviews (SQL source of truth, Firestore mirror)"""
 
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     serializer_class = FirestoreStationReviewSerializer
 
     def get_queryset(self):
-        # Not used
         return []
 
     def list(self, request, *args, **kwargs):
+        import sys
+        from .models import StationReview, ChargingStation
         station_id = self.kwargs.get('station_id')
-        reviews = firestore_repo.list_reviews(station_id)
-        serializer = self.get_serializer(reviews, many=True)
-        return Response(serializer.data)
+        try:
+            reviews = StationReview.objects.filter(
+                station__id=station_id, is_active=True
+            ).select_related('user', 'station').order_by('-created_at')
+            data = [{
+                'id': str(r.id),
+                'user_id': str(r.user.id),
+                'user_name': r.user.get_full_name() or r.user.email,
+                'station_id': str(r.station.id),
+                'rating': r.rating,
+                'review_text': r.review_text or '',
+                'charging_speed_rating': r.charging_speed_rating,
+                'location_rating': r.location_rating,
+                'amenities_rating': r.amenities_rating,
+                'is_verified_review': r.is_verified_review,
+                'created_at': r.created_at.isoformat(),
+                'reply': {'text': r.reply.reply_text, 'created_at': r.reply.created_at.isoformat()} if hasattr(r, 'reply') and r.reply else None,
+            } for r in reviews]
+            return Response(data)
+        except Exception as e:
+            print(f"Warning: SQL review list failed, falling back to Firestore: {e}", file=sys.stderr)
+            reviews = firestore_repo.list_reviews(station_id)
+            return Response(reviews)
 
     def create(self, request, *args, **kwargs):
+        import sys, traceback
+        from .models import StationReview, ChargingStation
         try:
             station_id = self.kwargs.get('station_id')
-            station = firestore_repo.get_station(station_id)
-            if not station:
-                 return Response({"error": "Station not found"}, status=status.HTTP_404_NOT_FOUND)
+            try:
+                sql_station = ChargingStation.objects.get(id=station_id)
+            except ChargingStation.DoesNotExist:
+                return Response({"error": "Station not found"}, status=status.HTTP_404_NOT_FOUND)
 
-            # Check existing review in Firestore
-            # We need to filter list by user_id
-            # Optimization: check if we can query subcollection by field? 
-            # Subcollections are just collections. Yes, we can query.
-            # But the repo list_reviews returns all. We can filter in memory or add method.
-            # Adding method `get_user_review(station_id, user_id)` is better.
-            # For now, memory filter
-            
-            user_id = str(request.user.id)
-            all_reviews = firestore_repo.list_reviews(station_id)
-            existing_review = next((r for r in all_reviews if r.get('user_id') == user_id), None)
+            data = request.data
+            # Upsert: one review per user per station
+            sql_review, created = StationReview.objects.update_or_create(
+                user=request.user,
+                station=sql_station,
+                defaults={
+                    'rating': int(data.get('rating', 5)),
+                    'review_text': data.get('review_text', '') or data.get('comment', ''),
+                    'charging_speed_rating': data.get('charging_speed_rating') or None,
+                    'location_rating': data.get('location_rating') or None,
+                    'amenities_rating': data.get('amenities_rating') or None,
+                    'is_active': True,
+                }
+            )
+            # StationReview.save() auto-updates station.rating + station.rating_count
 
-            context = self.get_serializer_context()
-            context['station_id'] = station_id
-            
-            serializer = self.get_serializer(data=request.data, context=context)
-            serializer.is_valid(raise_exception=True)
+            review_dict = {
+                'id': str(sql_review.id),
+                'user_id': str(request.user.id),
+                'station_id': str(station_id),
+                'rating': sql_review.rating,
+                'review_text': sql_review.review_text or '',
+                'created_at': sql_review.created_at.isoformat(),
+            }
 
-            if existing_review:
-                # Update existing
-                updated = firestore_repo.update_review(station_id, existing_review['id'], serializer.validated_data)
-                return Response(updated, status=status.HTTP_200_OK)
-            else:
-                # Create new
-                review = serializer.save()
-                return Response(review, status=status.HTTP_201_CREATED)
+            # Mirror to Firestore (best-effort)
+            try:
+                if created:
+                    firestore_repo.create_review(str(station_id), review_dict)
+                else:
+                    firestore_repo.update_review(str(station_id), str(sql_review.id), review_dict)
+            except Exception as e:
+                print(f"Warning: Firestore review sync failed (non-fatal): {e}", file=sys.stderr)
+
+            return Response(review_dict, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
         except Exception as e:
-            import traceback
-            print(f"Error creating review: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
-            return Response({
-                'success': False,
-                'error': str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"Error creating review: {e}\n{traceback.format_exc()}")
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class StationReviewDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """View to retrieve, update, or delete a specific review"""
+    """View to retrieve, update, or delete a specific review (SQL source of truth)"""
 
     permission_classes = [permissions.IsAuthenticated]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
-    serializer_class = FirestoreStationReviewSerializer
     lookup_field = 'id'
 
-    def get_object(self):
-        # We need station_id and review_id. 
-        # Actually URL usually contains station_id if nested?
-        # Standard View behavior might be just /reviews/<id>/
-        # If /reviews/<id>/ we must find station!
-        # Our `list_reviews_by_user` can find it if we iterate? No.
-        # But wait, UserReviewsView returns list. 
-        # If user edits own review, they can pass station_id?
-        # Assuming URL like /stations/<station_id>/reviews/<id>/ or just /reviews/<id>/
-        # Let's check serializer/urls.
-        # Based on previous code, reviews belonged to station.
-        # If URL structure doesn't change, normally we just have ID.
-        # BUT since we are NoSQL with subcollections, we need parent ID to direct address.
-        # UNLESS we use Collection Group Query to find document by ID globally.
-        # Let's try to assume station_id is in kwargs OR we search.
-        
-        station_id = self.kwargs.get('station_id')
+    def _get_sql_review(self):
+        from .models import StationReview
+        from rest_framework.exceptions import NotFound, PermissionDenied
         review_id = self.kwargs.get('id')
-        
-        if not station_id:
-             # Try to find by User (since they own it)
-             # This is inefficient if we don't store station_id on review in consistent way or index?
-             # We assume we can pass station_id in request or URL.
-             # If existing URLs didn't have station_id, we might be in trouble for backward compat.
-             # We should probably force client to send station_id?
-             # Or search user reviews.
-             user_reviews = firestore_repo.list_reviews_by_user(self.request.user.id)
-             review = next((r for r in user_reviews if r['id'] == review_id), None)
-             if review:
-                 station_id = review['station_id']
-             else:
-                 self.permission_denied(self.request, message="Review not found", code=404)
-        else:
-             review = firestore_repo.get_review(station_id, review_id)
-
-        if not review:
-             self.permission_denied(self.request, message="Review not found", code=404)
-             
-        if review.get('user_id') != str(self.request.user.id):
-             self.permission_denied(self.request, message="Not your review")
-             
-        self.station_id = station_id # Context for update
+        try:
+            review = StationReview.objects.select_related('station', 'user').get(id=review_id)
+        except StationReview.DoesNotExist:
+            raise NotFound('Review not found.')
+        if review.user != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied('Not your review.')
         return review
 
-    def perform_update(self, serializer):
-        # We need station_id which we found in get_object.
-        # But perform_update receives serializer with validated data?
-        # Serializer.save() calls create/update.
-        # The serializer update method needs keys.
-        # We can pass instance dict which has station_id.
-        serializer.save()
+    def retrieve(self, request, *args, **kwargs):
+        r = self._get_sql_review()
+        return Response({'id': str(r.id), 'rating': r.rating, 'review_text': r.review_text, 'created_at': r.created_at.isoformat()})
+
+    def update(self, request, *args, **kwargs):
+        import sys
+        r = self._get_sql_review()
+        data = request.data
+        r.rating = data.get('rating', r.rating)
+        r.review_text = data.get('review_text', r.review_text) or data.get('comment', r.review_text)
+        r.charging_speed_rating = data.get('charging_speed_rating', r.charging_speed_rating)
+        r.location_rating = data.get('location_rating', r.location_rating)
+        r.amenities_rating = data.get('amenities_rating', r.amenities_rating)
+        r.save()  # auto-updates station rating
+        try:
+            firestore_repo.update_review(str(r.station.id), str(r.id), {'rating': r.rating, 'review_text': r.review_text})
+        except Exception as e:
+            print(f"Warning: Firestore review update failed (non-fatal): {e}", file=sys.stderr)
+        return Response({'id': str(r.id), 'rating': r.rating, 'review_text': r.review_text})
 
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        # instance is dict
-        firestore_repo.delete_review(instance['station_id'], instance['id'])
+        import sys
+        r = self._get_sql_review()
+        station_id_str = str(r.station.id)
+        review_id_str = str(r.id)
+        r.delete()  # auto-updates station rating via model.delete()
+        try:
+            firestore_repo.delete_review(station_id_str, review_id_str)
+        except Exception as e:
+            print(f"Warning: Firestore review delete failed (non-fatal): {e}", file=sys.stderr)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class UserReviewsView(generics.ListAPIView):
-    """View to get all reviews by the current user"""
+    """View to get all reviews by the current user (reads from SQL)"""
 
     permission_classes = [permissions.IsAuthenticated]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
-    serializer_class = FirestoreStationReviewSerializer
-
-    def get_queryset(self):
-         return []
 
     def list(self, request, *args, **kwargs):
-        reviews = firestore_repo.list_reviews_by_user(request.user.id)
-        serializer = self.get_serializer(reviews, many=True)
-        return Response(serializer.data)
+        import sys
+        from .models import StationReview
+        try:
+            reviews = StationReview.objects.filter(
+                user=request.user, is_active=True
+            ).select_related('station').order_by('-created_at')
+            data = [{
+                'id': str(r.id),
+                'station_id': str(r.station.id),
+                'station_name': r.station.name,
+                'rating': r.rating,
+                'review_text': r.review_text or '',
+                'created_at': r.created_at.isoformat(),
+            } for r in reviews]
+            return Response(data)
+        except Exception as e:
+            print(f"Warning: SQL user-review list failed, falling back to Firestore: {e}", file=sys.stderr)
+            reviews = firestore_repo.list_reviews_by_user(request.user.id)
+            return Response(reviews)
 
 
 class StationReviewStatsView(APIView):
@@ -1070,68 +1202,68 @@ class MobileChargingHistoryView(APIView):
 
 
 class StationOwnerSettingsView(generics.RetrieveUpdateAPIView):
-    """View to manage station owner settings"""
+    """View to manage station owner settings (SQL source of truth, Firestore mirror)"""
 
     permission_classes = [permissions.IsAuthenticated]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     serializer_class = StationOwnerSettingsSerializer
 
-    def get_object(self):
+    def _get_or_create_sql_settings(self):
+        from .models import StationOwner, StationOwnerSettings
         try:
-            # We store settings in Firestore as separate document or field in Profile?
-            # Model says OneToOne.
-            # In Firestore, we should put it in 'station_owner_settings' collection with ID = user_id
-            
-            settings_data = firestore_repo.get_station_owner_settings(self.request.user.id)
-            if not settings_data:
-                 # Return default structure if not found (lazy create)
-                 return {
-                    'default_pricing_per_kwh': 5.50,
-                    'auto_accept_bookings': True,
-                    'max_session_duration_hours': 4,
-                    'maintenance_mode': False,
-                    'email_notifications': True,
-                    'sms_notifications': False,
-                    'booking_notifications': True,
-                    'payment_notifications': True,
-                    'maintenance_alerts': True,
-                    'marketing_emails': False,
-                    'station_updates': True,
-                    'brand_color': '#3B82F6',
-                    'display_company_info': True
-                 }
-            return settings_data
-        except Exception:
+            owner = StationOwner.objects.get(user=self.request.user)
+            settings_obj, _ = StationOwnerSettings.objects.get_or_create(owner=owner)
+            return settings_obj
+        except StationOwner.DoesNotExist:
             from django.http import Http404
             raise Http404("Station owner profile not found")
 
+    def retrieve(self, request, *args, **kwargs):
+        s = self._get_or_create_sql_settings()
+        return Response({
+            'default_pricing_per_kwh': float(s.default_pricing_per_kwh),
+            'auto_accept_bookings': s.auto_accept_bookings,
+            'max_session_duration_hours': s.max_session_duration_hours,
+            'maintenance_mode': s.maintenance_mode,
+            'email_notifications': s.email_notifications,
+            'sms_notifications': s.sms_notifications,
+            'booking_notifications': s.booking_notifications,
+            'payment_notifications': s.payment_notifications,
+            'maintenance_alerts': s.maintenance_alerts,
+            'marketing_emails': s.marketing_emails,
+            'station_updates': s.station_updates,
+            'brand_color': s.brand_color,
+            'display_company_info': s.display_company_info,
+        })
+
     def update(self, request, *args, **kwargs):
+        import sys
+        s = self._get_or_create_sql_settings()
+        data = request.data
+        fields = ['default_pricing_per_kwh', 'auto_accept_bookings', 'max_session_duration_hours',
+                  'maintenance_mode', 'email_notifications', 'sms_notifications',
+                  'booking_notifications', 'payment_notifications', 'maintenance_alerts',
+                  'marketing_emails', 'station_updates', 'brand_color', 'display_company_info']
+        for field in fields:
+            if field in data:
+                setattr(s, field, data[field])
+        s.save()
+
+        result = {
+            'default_pricing_per_kwh': float(s.default_pricing_per_kwh),
+            'auto_accept_bookings': s.auto_accept_bookings,
+            'maintenance_mode': s.maintenance_mode,
+            'email_notifications': s.email_notifications,
+            'brand_color': s.brand_color,
+        }
+
+        # Mirror to Firestore (best-effort)
         try:
-            partial = kwargs.pop('partial', True)
-            instance = self.get_object()
-            serializer = self.get_serializer(instance, data=request.data, partial=partial)
-
-            if serializer.is_valid():
-                # self.perform_update(serializer) # serializer.save() usually
-                # We need to call repo
-                updated = firestore_repo.update_station_owner_settings(request.user.id, serializer.validated_data)
-                return Response({
-                    'success': True,
-                    'message': 'Settings updated successfully',
-                    'data': updated
-                })
-            else:
-                return Response({
-                    'success': False,
-                    'message': 'Validation failed',
-                    'errors': serializer.errors
-                }, status=status.HTTP_400_BAD_REQUEST)
-
+            firestore_repo.update_station_owner_settings(request.user.id, data)
         except Exception as e:
-            return Response({
-                'success': False,
-                'message': f'Failed to update settings: {str(e)}'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"Warning: Firestore settings sync failed (non-fatal): {e}", file=sys.stderr)
+
+        return Response({'success': True, 'message': 'Settings updated successfully', 'data': result})
 
 
 class NotificationTemplateListView(generics.ListAPIView):
@@ -1379,62 +1511,116 @@ class AvailableStationsView(generics.ListAPIView):
         serializer = self.get_serializer(stations, many=True)
         return Response(serializer.data)
 class PayoutMethodListCreateView(APIView):
-    """View to list and create payout methods for station owners (Firestore)"""
+    """View to list and create payout methods for station owners (SQL source of truth)"""
 
     permission_classes = [permissions.IsAuthenticated]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
-    # serializer_class = FirestorePayoutMethodSerializer # for schema gen
+
+    def _get_owner(self, user):
+        from .models import StationOwner
+        from rest_framework.exceptions import NotFound
+        try:
+            return StationOwner.objects.get(user=user)
+        except StationOwner.DoesNotExist:
+            raise NotFound('Station owner profile not found.')
 
     def get(self, request):
-        try:
-            methods = firestore_repo.list_payout_methods(request.user.id)
-            return Response(methods)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        from .models import PayoutMethod
+        owner = self._get_owner(request.user)
+        methods = PayoutMethod.objects.filter(station_owner=owner, is_active=True).order_by('-is_default', '-created_at')
+        data = [{'id': str(m.id), 'method_type': m.method_type, 'account_holder_name': m.account_holder_name,
+                 'bank_name': m.bank_name, 'account_number': m.account_number, 'phone_number': m.phone_number,
+                 'provider': m.provider, 'is_default': m.is_default, 'is_verified': m.is_verified} for m in methods]
+        return Response(data)
 
     def post(self, request):
+        import sys
+        from .models import PayoutMethod
+        owner = self._get_owner(request.user)
+        d = request.data
         try:
-            # Check if user is a station owner
-            station_owner = firestore_repo.get_station_owner(request.user.id)
-            if not station_owner:
-                return Response({
-                    'success': False,
-                    'error': 'You must be a registered station owner to add payout methods'
-                }, status=status.HTTP_403_FORBIDDEN)
-
-            serializer = FirestorePayoutMethodSerializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
-            
-            data = serializer.validated_data
-            
-            # Logic: If first method, set default
-            existing = firestore_repo.list_payout_methods(request.user.id)
-            if not existing:
-                data['is_default'] = True
-
-            payout_method = firestore_repo.create_payout_method(request.user.id, data)
-
-            return Response({
-                'success': True,
-                'message': 'Payout method added successfully',
-                'data': payout_method
-            }, status=status.HTTP_201_CREATED)
-
+            # If first method, make it default
+            is_first = not PayoutMethod.objects.filter(station_owner=owner, is_active=True).exists()
+            sql_pm = PayoutMethod.objects.create(
+                station_owner=owner,
+                method_type=d.get('method_type', 'bank_account'),
+                account_holder_name=d.get('account_holder_name', ''),
+                bank_name=d.get('bank_name', ''),
+                account_number=d.get('account_number', ''),
+                routing_number=d.get('routing_number', ''),
+                swift_code=d.get('swift_code', ''),
+                phone_number=d.get('phone_number', ''),
+                provider=d.get('provider', ''),
+                paypal_email=d.get('paypal_email', ''),
+                is_default=is_first or d.get('is_default', False),
+                is_active=True,
+            )
         except Exception as e:
-             return Response({'success': False, 'message': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = {'id': str(sql_pm.id), 'method_type': sql_pm.method_type,
+                  'account_holder_name': sql_pm.account_holder_name, 'is_default': sql_pm.is_default}
+
+        # Mirror to Firestore (best-effort)
+        try:
+            firestore_repo.create_payout_method(request.user.id, {**result, 'sql_id': str(sql_pm.id)})
+        except Exception as e:
+            print(f"Warning: Firestore payout sync failed (non-fatal): {e}", file=sys.stderr)
+
+        return Response({'success': True, 'message': 'Payout method added successfully', 'data': result},
+                        status=status.HTTP_201_CREATED)
 
 
 class PayoutMethodDetailView(APIView):
-    """View to retrieve, update, or delete a specific payout method (Firestore)"""
+    """View to retrieve, update, or delete a specific payout method (SQL source of truth)"""
 
     permission_classes = [permissions.IsAuthenticated]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
 
+    def _get_sql_pm(self, request, id):
+        from .models import PayoutMethod, StationOwner
+        from rest_framework.exceptions import NotFound
+        try:
+            owner = StationOwner.objects.get(user=request.user)
+            return PayoutMethod.objects.get(id=id, station_owner=owner, is_active=True)
+        except (PayoutMethod.DoesNotExist, StationOwner.DoesNotExist):
+            raise NotFound('Payout method not found.')
+
     def get(self, request, id):
-        pm = firestore_repo.get_payout_method(request.user.id, id)
-        if not pm:
-            return Response({'message': 'Payout method not found'}, status=status.HTTP_404_NOT_FOUND)
-        return Response(pm)
+        pm = self._get_sql_pm(request, id)
+        return Response({'id': str(pm.id), 'method_type': pm.method_type,
+                         'account_holder_name': pm.account_holder_name,
+                         'bank_name': pm.bank_name, 'account_number': pm.account_number,
+                         'phone_number': pm.phone_number, 'provider': pm.provider,
+                         'is_default': pm.is_default, 'is_verified': pm.is_verified})
+
+    def put(self, request, id):
+        import sys
+        pm = self._get_sql_pm(request, id)
+        d = request.data
+        for field in ['account_holder_name', 'bank_name', 'account_number', 'routing_number',
+                      'swift_code', 'phone_number', 'provider', 'paypal_email', 'is_default']:
+            if field in d:
+                setattr(pm, field, d[field])
+        pm.save()
+        try:
+            firestore_repo.update_payout_method(request.user.id, id, d)
+        except Exception as e:
+            print(f"Warning: Firestore payout update failed (non-fatal): {e}", file=sys.stderr)
+        return Response({'success': True, 'message': 'Payout method updated successfully',
+                         'data': {'id': str(pm.id), 'is_default': pm.is_default}})
+
+    def delete(self, request, id):
+        import sys
+        pm = self._get_sql_pm(request, id)
+        pm.is_active = False
+        pm.save()
+        try:
+            firestore_repo.delete_payout_method(request.user.id, id)
+        except Exception as e:
+            print(f"Warning: Firestore payout delete failed (non-fatal): {e}", file=sys.stderr)
+        return Response({'success': True, 'message': 'Payout method deleted successfully'},
+                        status=status.HTTP_204_NO_CONTENT)
 
     def put(self, request, id):
         pm = firestore_repo.get_payout_method(request.user.id, id)
