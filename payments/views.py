@@ -258,17 +258,15 @@ class QRPaymentInitiateView(APIView):
                     amount=payment_amount,
                     phone_number=qr_session.phone_number,
                     description=f"Charging at {connector.station.name} - {connector.get_connector_type_display()}",
-                    use_mobile_return=is_mobile_app
+                    use_mobile_return=is_mobile_app,
+                    qr_session=qr_session
                 )
 
                 if result['success']:
-                    # Link the QR session to the created transaction
+                    # Transaction is already linked inside initiate_chapa_payment
                     from .models import Transaction
                     transaction = Transaction.objects.get(id=result['transaction_id'])
-                    qr_session.payment_transaction = transaction
-                    qr_session.status = 'payment_initiated'
-                    qr_session.save()
-
+                    
                     return Response({
                         'success': True,
                         'message': 'Payment initiated successfully',

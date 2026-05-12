@@ -123,8 +123,15 @@ class PaymentService:
 
         return transaction
 
-    def initiate_chapa_payment(self, user, amount, phone_number, description="evmeri Payment", use_mobile_return=False):
+    def initiate_chapa_payment(self, user, amount, phone_number, description="evmeri Payment", use_mobile_return=False, qr_session=None):
         transaction = self.create_transaction_for_wallet_deposit(user, amount, phone_number, description)
+
+        # Link QR session BEFORE calling Chapa to avoid race condition in callback
+        if qr_session:
+            qr_session.payment_transaction = transaction
+            qr_session.status = 'payment_initiated'
+            qr_session.save()
+            logger.info(f"Linked QR session {qr_session.session_token} to transaction {transaction.reference_number} before Chapa call")
 
         result = self.chapa.initiate_payment(
             phone_number=phone_number,
@@ -166,41 +173,42 @@ class PaymentService:
                 logger.error("Missing tx_ref in callback data")
                 return {'success': False, 'message': 'Missing tx_ref'}
 
-            # Check for QR payment session - try multiple ways to find it
+            # Check for QR payment session
             from .models import QRPaymentSession
-            qr_session = QRPaymentSession.objects.filter(
-                payment_transaction__external_reference=tx_ref
-            ).first()
+            
+            # 1. Try to find by external_reference (which is our reference_number)
+            transaction = Transaction.objects.filter(external_reference=tx_ref).first()
+            if not transaction:
+                transaction = Transaction.objects.filter(reference_number=tx_ref).first()
+            
+            logger.info(f"Callback Transaction: {transaction}")
 
-            # If not found, try by session token (in case tx_ref is the session token)
+            qr_session = None
+            if transaction:
+                qr_session = QRPaymentSession.objects.filter(payment_transaction=transaction).first()
+            
+            # 2. If not found via transaction link, try finding by session token 
+            # (only if tx_ref matches a session token - unlikely with current setup but good for fallback)
             if not qr_session:
-                qr_session = QRPaymentSession.objects.filter(
-                    session_token=tx_ref
-                ).first()
+                qr_session = QRPaymentSession.objects.filter(session_token=tx_ref).first()
 
             logger.info(f"Found QR session: {qr_session}")
 
-            if not qr_session:
-                logger.error(f"No QR session found for tx_ref: {tx_ref}")
-                # Try to find transaction directly
-                transaction = Transaction.objects.filter(
-                    external_reference=tx_ref
+            if not qr_session and transaction:
+                logger.info(f"No QR session linked yet for transaction {transaction.reference_number}. Checking for any PENDING session for this user/amount...")
+                # Fallback: Find most recent pending session for this user with same amount
+                qr_session = QRPaymentSession.objects.filter(
+                    user=transaction.user,
+                    status__in=['pending', 'payment_initiated'],
+                    calculated_amount=transaction.amount
                 ).first()
-                if transaction:
-                    logger.info(f"Found orphaned transaction: {transaction.reference_number}")
-                    # Try to find QR session by transaction
-                    qr_session = QRPaymentSession.objects.filter(
-                        payment_transaction=transaction
-                    ).first()
-                    if qr_session:
-                        logger.info(f"Found QR session via transaction: {qr_session.session_token}")
+                if qr_session:
+                    logger.info(f"Found orphaned session via fallback: {qr_session.session_token}. Linking now.")
+                    qr_session.payment_transaction = transaction
+                    qr_session.save()
 
-                if not qr_session:
-                    return {'success': False, 'message': 'Session not found'}
-
-            transaction = Transaction.objects.filter(
-                external_reference=tx_ref
-            ).first()
+            if not qr_session and not transaction:
+                return {'success': False, 'message': 'Session and Transaction not found'}
 
             logger.info(f"Found transaction: {transaction}")
 
