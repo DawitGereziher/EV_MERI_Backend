@@ -272,7 +272,7 @@ class QRPaymentInitiateView(APIView):
                     return Response({
                         'success': True,
                         'message': 'Payment initiated successfully',
-                        'checkout_url': result['data']['checkout_url'],
+                        'checkout_url': result['checkout_url'],
                         'session_token': qr_session.session_token,
                         'transaction_id': transaction.id,
                     }, status=status.HTTP_200_OK)
